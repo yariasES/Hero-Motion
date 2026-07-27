@@ -1,0 +1,421 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+  <title>GeoRoute AI | Oscuro</title>
+  <style>
+    /* === RESET Y BASE === */
+    * { margin:0; padding:0; box-sizing:border-box; }
+
+    body {
+      background: #010514;
+      font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+      overflow-x: hidden;
+    }
+
+    #canvas-bg {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      display: block;
+      z-index: 0;
+      pointer-events: none;
+      will-change: transform;
+    }
+
+    .text-overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 5;
+      pointer-events: none;
+      background: linear-gradient(90deg, rgba(1,5,20,0.75) 0%, rgba(1,5,20,0.4) 50%, rgba(1,5,20,0.1) 100%);
+    }
+
+    .content-wrapper {
+      position: relative;
+      z-index: 10;
+      pointer-events: none;
+    }
+
+    .hero-section {
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      padding: 2rem 5%;
+    }
+
+    .blank-section {
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: transparent;
+    }
+  </style>
+</head>
+<body>
+
+  <canvas id="canvas-bg"></canvas>
+  <div class="text-overlay"></div>
+
+  <div class="content-wrapper">
+    <div class="hero-section"></div>
+    <div class="blank-section"></div>
+  </div>
+
+  <script>
+    (function() {
+      'use strict';
+
+      // ============================================================
+      //  CONFIGURACIÓN
+      // ============================================================
+      const PARTICLE_COUNT = 80;
+      const CONNECTION_DIST = 175;
+      const MAX_SCROLL = 500;
+      const MAX_ANGLE = Math.PI * 0.28;
+      const MAX_SCALE = 1.45;
+
+      // ============================================================
+      //  ELEMENTOS DEL DOM
+      // ============================================================
+      const canvas = document.getElementById('canvas-bg');
+      const ctx = canvas.getContext('2d');
+      let W, H;
+
+      // ============================================================
+      //  PALETA OSCURA (fija)
+      // ============================================================
+      const colors = {
+        bg: ['#020a1c', '#03102a', '#01061a'],
+        particleBase: (r) => `rgba(0, ${160 + r * 95}, 255, 0.75)`,
+        particleGlow: 'rgba(0,200,255,0.6)',
+        lineColor: (a) => `rgba(0,210,255,${a})`,
+        grid: 'rgba(0,160,210,0.1)',
+        gridDiag: 'rgba(0,200,240,0.08)',
+        radar: 'rgba(0,210,250,0.2)',
+        routeStroke: 'rgba(60,255,230,0.7)',
+        routeDash: 'rgba(0,210,200,0.6)',
+        routeDot: '#fff',
+        routeDotInner: '#0cf',
+        routePulse: 'rgba(0,255,210,0.9)',
+        startPoint: '#ffaa44',
+        endPoint: '#ff5566',
+        connGlow: 'rgba(100,255,200,0.7)',
+        flash: 'rgba(100,200,255,0.08)',
+        shadowColor: '#0ff',
+        shadowColor2: '#0cf',
+        isDark: true,
+      };
+
+      // ============================================================
+      //  PARTÍCULAS
+      // ============================================================
+      let particles = [];
+      let startPoint = null, endPoint = null;
+      let routeProgress = 0, routeSpeed = 0.005, routeTimer = 0;
+      let animationTime = 0;
+
+      class Particle {
+        constructor(x, y, radius, color) {
+          this.x = x;
+          this.y = y;
+          this.centerX = x;
+          this.centerY = y;
+          this.radius = radius;
+          this.color = color;
+          this.freqX = 0.002 + Math.random() * 0.003;
+          this.freqY = 0.002 + Math.random() * 0.003;
+          this.phaseX = Math.random() * Math.PI * 2;
+          this.phaseY = Math.random() * Math.PI * 2;
+          this.ampX = 15 + Math.random() * 25;
+          this.ampY = 12 + Math.random() * 20;
+          this.driftAngle = Math.random() * Math.PI * 2;
+          this.driftSpeed = 0.05 + Math.random() * 0.1;
+        }
+        update(time) {
+          this.x = this.centerX + Math.sin(time * this.freqX + this.phaseX) * this.ampX;
+          this.y = this.centerY + Math.cos(time * this.freqY + this.phaseY) * this.ampY;
+          this.driftAngle += this.driftSpeed * 0.008;
+          this.x += Math.sin(this.driftAngle) * 1.8;
+          this.y += Math.cos(this.driftAngle * 0.7) * 1.5;
+          if (this.x < -80) this.x = W + 80;
+          else if (this.x > W + 80) this.x = -80;
+          if (this.y < -80) this.y = H + 80;
+          else if (this.y > H + 80) this.y = -80;
+          const dx = this.centerX - this.x;
+          const dy = this.centerY - this.y;
+          if (Math.abs(dx) > 120) this.centerX = this.x;
+          if (Math.abs(dy) > 120) this.centerY = this.y;
+        }
+        draw(ctx) {
+          ctx.beginPath();
+          ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+          ctx.fillStyle = this.color;
+          ctx.shadowBlur = 8;
+          ctx.shadowColor = colors.particleGlow;
+          ctx.fill();
+          ctx.shadowBlur = 0;
+          ctx.beginPath();
+          ctx.arc(this.x, this.y, this.radius * 0.5, 0, Math.PI * 2);
+          ctx.fillStyle = 'rgba(210,240,255,0.9)';
+          ctx.fill();
+        }
+      }
+
+      function initParticles() {
+        particles = [];
+        for (let i = 0; i < PARTICLE_COUNT; i++) {
+          const x = Math.random() * W;
+          const y = Math.random() * H;
+          const radius = 2 + Math.random() * 4;
+          const color = colors.particleBase(Math.random());
+          particles.push(new Particle(x, y, radius, color));
+        }
+        generateRoute();
+      }
+
+      function generateRoute() {
+        if (particles.length < 2) return;
+        let a = Math.floor(Math.random() * particles.length);
+        let b = Math.floor(Math.random() * particles.length);
+        while (b === a && particles.length > 1) b = Math.floor(Math.random() * particles.length);
+        startPoint = particles[a];
+        endPoint = particles[b];
+        routeProgress = 0;
+        routeSpeed = 0.004 + Math.random() * 0.006;
+        routeTimer = 0;
+      }
+
+      function drawRoute(ctx, time) {
+        if (!startPoint || !endPoint) return;
+        if (routeProgress >= 1) {
+          if (routeTimer > 20) generateRoute();
+          else routeTimer++;
+          return;
+        }
+        routeProgress += routeSpeed;
+        if (routeProgress > 1) routeProgress = 1;
+
+        const sx = startPoint.x, sy = startPoint.y;
+        const ex = endPoint.x, ey = endPoint.y;
+        const cx = sx + (ex - sx) * routeProgress;
+        const cy = sy + (ey - sy) * routeProgress;
+
+        ctx.beginPath();
+        ctx.moveTo(sx, sy);
+        ctx.lineTo(ex, ey);
+        ctx.strokeStyle = colors.routeStroke;
+        ctx.lineWidth = 2.2;
+        ctx.shadowBlur = 12;
+        ctx.shadowColor = colors.shadowColor;
+        ctx.stroke();
+
+        ctx.setLineDash([8, 8]);
+        ctx.beginPath();
+        ctx.moveTo(sx, sy);
+        ctx.lineTo(ex, ey);
+        ctx.strokeStyle = colors.routeDash;
+        ctx.lineWidth = 1.2;
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.shadowBlur = 0;
+
+        const pulse = 7 + Math.sin(time * 0.008) * 1.2;
+        ctx.beginPath();
+        ctx.arc(cx, cy, pulse, 0, Math.PI * 2);
+        ctx.fillStyle = colors.routeDot;
+        ctx.shadowBlur = 14;
+        ctx.shadowColor = colors.shadowColor2;
+        ctx.fill();
+        ctx.beginPath();
+        ctx.arc(cx, cy, 3.5, 0, Math.PI * 2);
+        ctx.fillStyle = colors.routeDotInner;
+        ctx.fill();
+
+        const ring = 12 + Math.sin(time * 0.01) * 2;
+        ctx.beginPath();
+        ctx.arc(cx, cy, ring, 0, Math.PI * 2);
+        ctx.strokeStyle = colors.routePulse;
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+        ctx.shadowBlur = 0;
+
+        ctx.beginPath();
+        ctx.arc(sx, sy, 5, 0, Math.PI * 2);
+        ctx.fillStyle = colors.startPoint;
+        ctx.shadowBlur = 8;
+        ctx.shadowColor = colors.startPoint;
+        ctx.fill();
+        ctx.beginPath();
+        ctx.arc(ex, ey, 5, 0, Math.PI * 2);
+        ctx.fillStyle = colors.endPoint;
+        ctx.shadowBlur = 0;
+        ctx.fill();
+      }
+
+      function drawGrid(ctx) {
+        const step = 50;
+        const extra = step * 3;
+        const x0 = -extra, x1 = W + extra;
+        const y0 = -extra, y1 = H + extra;
+        ctx.strokeStyle = colors.grid;
+        ctx.lineWidth = 0.6;
+        for (let x = x0; x <= x1; x += step) {
+          ctx.beginPath();
+          ctx.moveTo(x, y0);
+          ctx.lineTo(x, y1);
+          ctx.stroke();
+        }
+        for (let y = y0; y <= y1; y += step) {
+          ctx.beginPath();
+          ctx.moveTo(x0, y);
+          ctx.lineTo(x1, y);
+          ctx.stroke();
+        }
+        ctx.strokeStyle = colors.gridDiag;
+        const diag = 65;
+        for (let i = -W - extra; i < W + H + extra; i += diag) {
+          ctx.beginPath();
+          ctx.moveTo(i, y0);
+          ctx.lineTo(i + (y1 - y0), y1);
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.moveTo(W + extra - i, y0);
+          ctx.lineTo(W + extra - i - (y1 - y0), y1);
+          ctx.stroke();
+        }
+      }
+
+      function drawRadar(ctx, time) {
+        const cx = W * 0.5, cy = H * 0.55;
+        const base = 70;
+        for (let i = 1; i <= 3; i++) {
+          const offset = (time * 0.0015 + i) % (Math.PI * 2);
+          const r = base + Math.sin(offset) * 18;
+          ctx.beginPath();
+          ctx.arc(cx + Math.sin(time) * 15, cy + Math.cos(time * 0.6) * 12, r, 0, Math.PI * 2);
+          ctx.strokeStyle = colors.radar;
+          ctx.lineWidth = 1.2;
+          ctx.stroke();
+        }
+      }
+
+      function drawConnections(ctx, time) {
+        const maxDist2 = CONNECTION_DIST * CONNECTION_DIST;
+        const len = particles.length;
+        for (let i = 0; i < len; i++) {
+          const pi = particles[i];
+          for (let j = i + 1; j < len; j++) {
+            const pj = particles[j];
+            const dx = pi.x - pj.x;
+            const dy = pi.y - pj.y;
+            const dist2 = dx * dx + dy * dy;
+            if (dist2 < maxDist2) {
+              const intensity = 1 - Math.sqrt(dist2) / CONNECTION_DIST;
+              const alpha = intensity * 0.25;
+              ctx.beginPath();
+              ctx.moveTo(pi.x, pi.y);
+              ctx.lineTo(pj.x, pj.y);
+              ctx.strokeStyle = colors.lineColor(alpha);
+              ctx.lineWidth = 1;
+              ctx.stroke();
+              if (intensity > 0.55 && (Math.sin(time * 0.003 + i) > 0.5)) {
+                const mx = (pi.x + pj.x) / 2;
+                const my = (pi.y + pj.y) / 2;
+                ctx.beginPath();
+                ctx.arc(mx, my, 1.5, 0, Math.PI * 2);
+                ctx.fillStyle = colors.connGlow;
+                ctx.fill();
+              }
+            }
+          }
+        }
+      }
+
+      // ============================================================
+      //  BUCLE PRINCIPAL
+      // ============================================================
+      let scrollY = 0;
+      let targetFactor = 0;
+      let currentFactor = 0;
+      let currentAngle = 0;
+      let currentScale = 1;
+
+      function updateScroll() {
+        scrollY = window.scrollY;
+        targetFactor = Math.min(1, scrollY / MAX_SCROLL);
+        currentFactor += (targetFactor - currentFactor) * 0.08;
+        currentAngle = currentFactor * MAX_ANGLE;
+        currentScale = 1 + currentFactor * (MAX_SCALE - 1);
+      }
+
+      function drawFrame() {
+        updateScroll();
+        const time = animationTime;
+
+        const grad = ctx.createLinearGradient(0, 0, W * 0.7, H);
+        grad.addColorStop(0, colors.bg[0]);
+        grad.addColorStop(0.6, colors.bg[1]);
+        grad.addColorStop(1, colors.bg[2]);
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, 0, W, H);
+
+        ctx.save();
+        const cx = W / 2, cy = H / 2;
+        ctx.translate(cx, cy);
+        ctx.rotate(currentAngle);
+        ctx.scale(currentScale, currentScale);
+        ctx.translate(-cx, -cy);
+
+        drawGrid(ctx);
+        drawRadar(ctx, time);
+
+        for (let p of particles) p.update(time);
+        drawConnections(ctx, time);
+        for (let p of particles) p.draw(ctx);
+        drawRoute(ctx, time);
+
+        ctx.restore();
+
+        if (Math.random() < 0.02) {
+          ctx.fillStyle = colors.flash;
+          const rx = Math.random() * W;
+          const ry = Math.random() * H;
+          ctx.beginPath();
+          ctx.arc(rx, ry, 3, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        animationTime += 0.016;
+        requestAnimationFrame(drawFrame);
+      }
+
+      // ============================================================
+      //  REDIMENSIONAR
+      // ============================================================
+      function resize() {
+        W = window.innerWidth;
+        H = window.innerHeight;
+        canvas.width = W;
+        canvas.height = H;
+        initParticles();
+      }
+
+      // ============================================================
+      //  INICIO
+      // ============================================================
+      window.addEventListener('resize', resize);
+      resize();
+      drawFrame();
+    })();
+  </script>
+</body>
+</html>
